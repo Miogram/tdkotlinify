@@ -5,6 +5,10 @@ data class GeneratedFile(
     val content: String,
 )
 
+private val contextualTypes = setOf(
+    "org.drinkless.tdlib.TdApi.Error",
+)
+
 object KotlinEmitter {
 
     private const val WRAP_AT = 100
@@ -28,13 +32,13 @@ object KotlinEmitter {
     ): String = buildString {
         appendLine("package $packageName")
         appendLine()
+        appendLine("import kotlinx.serialization.Contextual")
         appendLine("import kotlinx.serialization.SerialName")
         appendLine("import kotlinx.serialization.Serializable")
         appendLine()
 
         val sealedName = returnType.cap()
 
-        // KDoc for sealed interface
         if (classDesc.isNotBlank()) {
             appendLine("/**")
             appendLine(" * $classDesc")
@@ -51,7 +55,7 @@ object KotlinEmitter {
 
         appendLine("}")
     }
-
+    
     /**
      * emit a standalone data class file for a single-constructor type
      */
@@ -62,12 +66,13 @@ object KotlinEmitter {
     ): String = buildString {
         appendLine("package $packageName")
         appendLine()
+        appendLine("import kotlinx.serialization.Contextual")
         appendLine("import kotlinx.serialization.SerialName")
         appendLine("import kotlinx.serialization.Serializable")
         appendLine()
         append(emitClass(ctor, parentType = null, indent = "", baseClass = baseClass))
     }
-
+    
     private fun emitClass(
         ctor: TlConstructor,
         parentType: String?,
@@ -75,7 +80,7 @@ object KotlinEmitter {
         baseClass: String,
     ): String = buildString {
         val className = ctor.name.cap()
-        val parent = if (parentType != null) parentType else "$baseClass()"
+        val parent = if (parentType != null) parentType else baseClass
 
         if (ctor.description.isNotBlank() || ctor.fieldDocs.isNotEmpty()) {
             appendLine(kdoc(ctor, indent))
@@ -85,7 +90,6 @@ object KotlinEmitter {
         appendLine("""${indent}@SerialName(value = "${ctor.name}")""")
 
         if (ctor.fields.isEmpty()) {
-            // no fields -> data object
             appendLine("${indent}public data object $className : $parent")
             return@buildString
         }
@@ -99,7 +103,11 @@ object KotlinEmitter {
             val ktType = TypeResolver.toKotlin(field.tlType, nullable)
             val comma = if (idx < ctor.fields.lastIndex) "," else ""
 
+            // @Contextual needed for types without a kotlinx serializer (e.g. TdApi.Error)
+            val needsContextual = contextualTypes.any { ktType.contains(it) }
+
             appendLine("""$indent    @SerialName(value = "${field.snakeName}")""")
+            if (needsContextual) appendLine("$indent    @Contextual")
             appendLine("$indent    public val $camel: $ktType$comma")
         }
 
@@ -123,7 +131,6 @@ object KotlinEmitter {
             appendLine(buf)
         }
 
-        // @property per field
         val propLines = ctor.fields.mapNotNull { field ->
             val doc = ctor.fieldDocs[field.snakeName] ?: return@mapNotNull null
             "$indent * @property ${field.snakeName.snakeToCamel()} $doc"

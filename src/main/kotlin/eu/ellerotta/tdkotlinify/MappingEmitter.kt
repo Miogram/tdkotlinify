@@ -1,11 +1,7 @@
 package eu.ellerotta.tdkotlinify
 
 object MappingEmitter {
-
-    private val primitiveKtTypes = setOf(
-        "Int", "Long", "Double", "Boolean", "String", "ByteArray"
-    )
-
+    
     /**
      * generates a mapper file for a standalone data class:
      *
@@ -28,7 +24,7 @@ object MappingEmitter {
         appendLine("import org.drinkless.tdlib.TdApi")
         appendLine("import $domainPackage.${ctor.name.cap()}")
         appendLine()
-        append(mapperFun(ctor, receiverPrefix = "TdApi."))
+        append(mapperFun(ctor))
     }
 
     /**
@@ -54,22 +50,24 @@ object MappingEmitter {
         appendLine()
         appendLine("import org.drinkless.tdlib.TdApi")
         appendLine("import $domainPackage.$sealedName")
-        group.forEach { appendLine("import $domainPackage.${it.name.cap()}") }
         appendLine()
 
         appendLine("fun TdApi.$sealedName.toModel(): $sealedName = when (this) {")
 
         for (ctor in group) {
             val className = ctor.name.cap()
+            val qualifiedName = "$sealedName.$className"
+
             if (ctor.fields.isEmpty()) {
-                appendLine("    is TdApi.$className -> $className")
+                appendLine("    is TdApi.$className -> $qualifiedName")
             } else {
-                appendLine("    is TdApi.$className -> $className(")
+                appendLine("    is TdApi.$className -> $qualifiedName(")
                 ctor.fields.forEachIndexed { idx, field ->
                     val camel = field.snakeName.snakeToCamel()
-                    val ktType = TypeResolver.toKotlin(field.tlType).trimEnd('?')
                     val comma = if (idx < ctor.fields.lastIndex) "," else ""
-                    val value = mapFieldValue(camel, field.tlType, ktType)
+                    val doc = ctor.fieldDocs[field.snakeName] ?: ""
+                    val nullable = TypeResolver.isNullable(doc)
+                    val value = mapFieldValue(camel, field.tlType, nullable)
                     appendLine("        $camel = $value$comma")
                 }
                 appendLine("    )")
@@ -77,23 +75,24 @@ object MappingEmitter {
         }
 
         appendLine("    else -> error(\"Unknown $sealedName: \$this\")")
-        appendLine("}")
+        append("}")
     }
 
-    private fun mapperFun(ctor: TlConstructor, receiverPrefix: String): String = buildString {
+    private fun mapperFun(ctor: TlConstructor): String = buildString {
         val className = ctor.name.cap()
 
         if (ctor.fields.isEmpty()) {
-            appendLine("fun $receiverPrefix$className.toModel() = $className")
+            appendLine("fun TdApi.$className.toModel() = $className")
             return@buildString
         }
 
-        appendLine("fun $receiverPrefix$className.toModel() = $className(")
+        appendLine("fun TdApi.$className.toModel() = $className(")
         ctor.fields.forEachIndexed { idx, field ->
             val camel = field.snakeName.snakeToCamel()
-            val ktType = TypeResolver.toKotlin(field.tlType).trimEnd('?')
             val comma = if (idx < ctor.fields.lastIndex) "," else ""
-            val value = mapFieldValue(camel, field.tlType, ktType)
+            val doc = ctor.fieldDocs[field.snakeName] ?: ""
+            val nullable = TypeResolver.isNullable(doc)
+            val value = mapFieldValue(camel, field.tlType, nullable)
             appendLine("    $camel = $value$comma")
         }
         append(")")
@@ -101,23 +100,30 @@ object MappingEmitter {
 
     /**
      * decides how to map a single field value
-     * - primitive      -> use as-is
-     * - List<X>        -> map each element if x is not primitive
-     * - domain type    -> call .toModel()
+     * - primitive          -> use as-is
+     * - List<primitive>    -> .toList()
+     * - List<domain>       -> .map { it.toModel() }
+     * - nullable domain    -> ?.toModel()
+     * - non-null domain    -> .toModel()
      */
-    private fun mapFieldValue(camel: String, tlType: String, ktType: String): String {
+    private fun mapFieldValue(camel: String, tlType: String, nullable: Boolean): String {
         val vecMatch = Regex("""[Vv]ector<(.+)>""").find(tlType)
         if (vecMatch != null) {
             val innerTl = vecMatch.groupValues[1]
-            val innerKt = TypeResolver.toKotlin(innerTl)
-            return if (innerKt in primitiveKtTypes) {
-                "$camel.toList()"
-            } else {
-                "$camel.map { it.toModel() }"
+            // nested vector: vector<vector<X>>
+            val innerVecMatch = Regex("""[Vv]ector<(.+)>""").find(innerTl)
+            if (innerVecMatch != null) {
+                val innerInnerTl = innerVecMatch.groupValues[1]
+                return if (TypeResolver.isPrimitive(innerInnerTl))
+                    "$camel.map { it.toList() }"
+                else
+                    "$camel.map { row -> row.map { it.toModel() } }"
             }
+            return if (TypeResolver.isPrimitive(innerTl)) "$camel.toList()"
+            else "$camel.map { it.toModel() }"
         }
-
-        return if (ktType in primitiveKtTypes) camel else "$camel.toModel()"
+        if (TypeResolver.isPrimitive(tlType)) return camel
+        return if (nullable) "$camel?.toModel()" else "$camel.toModel()"
     }
 }
 

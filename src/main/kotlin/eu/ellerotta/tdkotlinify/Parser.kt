@@ -23,11 +23,25 @@ data class TlSchema(
 
 object Parser {
 
-    fun parse(text: String): TlSchema {
+    // tdlib builtin types that MUST NOT be generated as domain classes
+    private val skipReturnTypes = setOf(
+        "Vector", "vector",
+        "Int32", "int32",
+        "Int53", "int53",
+        "Int64", "int64",
+        "Double", "double",
+        "String", "string",
+        "Bool", "bool",
+        "Bytes", "bytes",
+        "True", "true",
+        "Error", "error",
+        "Ok", "ok",
+    )
+
+fun parse(text: String): TlSchema {
         val lines = text.lines()
         val classDescriptions = mutableMapOf<String, String>()
 
-        // extract @class descriptions first
         for (line in lines) {
             val m = Regex("""//@class\s+(\w+)\s+@description\s+(.+)""").find(line)
             if (m != null) {
@@ -35,7 +49,6 @@ object Parser {
             }
         }
 
-        // split into sections
         val types = mutableListOf<TlConstructor>()
         val functions = mutableListOf<TlConstructor>()
 
@@ -54,7 +67,6 @@ object Parser {
                 trimmed.startsWith("//")     -> { commentBuf.add(trimmed); i++; continue }
             }
 
-            // multiline definition until ;
             val defnLines = mutableListOf<String>()
             while (i < lines.size) {
                 val l = lines[i].trim()
@@ -86,13 +98,18 @@ object Parser {
             .trim().trimEnd(';').trim()
             .replaceFirstChar { it.uppercaseChar() }
 
+        // skip tdlib builtin primitive/special types
+        if (returnType in skipReturnTypes) return null
+
         val lhs = fullDefn.substring(0, eqIdx).trim()
         val nameMatch = Regex("""^([a-zA-Z_][a-zA-Z0-9_.]*)""").find(lhs) ?: return null
         val name = nameMatch.value
 
+        // also skip if constructor name matches a primitive (e.g. "vector t:Type = Vector")
+        if (name.lowercase() in skipReturnTypes.map { it.lowercase() }) return null
+
         val fieldsStr = lhs.removePrefix(name).trim()
 
-        // skip true primitives (e.g. "int32 = Int32;") no comments no fields
         val (description, fieldDocs) = parseComments(comments)
         if (fieldsStr.isEmpty() && description.isEmpty() && comments.isEmpty()) return null
 
@@ -110,7 +127,6 @@ object Parser {
 
     fun parseComments(comments: List<String>): Pair<String, Map<String, String>> {
         val joined = comments.joinToString(" ") { it.trimStart('/').trim() }
-        // split on @token — produces [prefix, key1, val1, key2, val2, ...]
         val tokens = joined.split(Regex("""@(\w+)"""))
         val keys = Regex("""@(\w+)""").findAll(joined).map { it.groupValues[1] }.toList()
 
@@ -119,7 +135,7 @@ object Parser {
 
         tokens.forEachIndexed { idx, value ->
             val trimmed = value.trim()
-            if (idx == 0) return@forEachIndexed  // before first @
+            if (idx == 0) return@forEachIndexed
             val key = keys.getOrNull(idx - 1) ?: return@forEachIndexed
             when (key) {
                 "description" -> description = trimmed
@@ -131,11 +147,10 @@ object Parser {
     }
 
     private fun parseFields(fieldsStr: String): List<TlField> {
-        // match: type pairs, skip flags (#) and conditional flags (flags.N?true)
         return Regex("""(\w+):([\w.<>]+)""")
             .findAll(fieldsStr)
             .map { m -> TlField(m.groupValues[1], m.groupValues[2]) }
-            .filterNot { it.snakeName == "flags" }          // flags:# — metadata
+            .filterNot { it.snakeName == "flags" }
             .toList()
     }
 }
