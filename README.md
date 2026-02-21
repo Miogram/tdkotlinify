@@ -107,3 +107,8 @@ tdkotlinify/
     └── KotlinEmitter.kt — kotlin code generator
 ```
 
+
+## license
+the entire project is licensed under GPLv3,
+so please rely only on this [[see here]](https://github.com/miogram/tdkotlinify/blob/main/LICENSE)
+
