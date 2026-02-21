@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "eu.ellerotta"
-version = "0.10"
+version = "0.20"
 
 repositories {
     mavenCentral()

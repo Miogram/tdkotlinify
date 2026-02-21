@@ -12,65 +12,73 @@ object Generator {
 
     fun run(schemaFile: File, config: GeneratorConfig) {
         val schema = Parser.parse(schemaFile.readText())
-	CategoryMapper.buildIndex(schema.types.map { it.returnType })
         val groups: Map<String, List<TlConstructor>> = schema.types
             .groupBy { it.returnType }
             .toSortedMap()
 
-        config.outputDir.deleteRecursively()
+        val domainDir = File(config.outputDir, "domain").also { it.mkdirs() }
+        val mappingDir = File(config.outputDir, "mapping").also { it.mkdirs() }
+
+        val domainPackage = "${config.packageName}.domain"
+        val mappingPackage = "${config.packageName}.mapping"
 
         var filesWritten = 0
-        var sealedCount = 0
-        var standaloneCount = 0
 
         for ((returnType, group) in groups) {
-            val category = CategoryMapper.get(returnType)
-            val dir = File(config.outputDir, category).also { it.mkdirs() }
-
             if (group.size > 1) {
-                // sealed interface — one file with all implementations nested
                 val classDesc = schema.classDescriptions[returnType] ?: ""
-                val code = KotlinEmitter.emitSealedFile(
-                    returnType = returnType,
-                    group = group,
-                    classDesc = classDesc,
-                    packageName = "${config.packageName}.$category",
-                    baseClass = config.baseClass,
+
+                // domain
+                File(domainDir, "${returnType.cap()}.kt").writeText(
+                    KotlinEmitter.emitSealedFile(
+                        returnType = returnType,
+                        group = group,
+                        classDesc = classDesc,
+                        packageName = domainPackage,
+                        baseClass = config.baseClass,
+                    )
                 )
-                File(dir, "${returnType.cap()}.kt").writeText(code)
-                sealedCount++
+
+                // mapping
+                File(mappingDir, "${returnType.cap()}Mapping.kt").writeText(
+                    MappingEmitter.emitSealedMapper(
+                        returnType = returnType,
+                        group = group,
+                        domainPackage = domainPackage,
+                        mappingPackage = mappingPackage,
+                    )
+                )
             } else {
-                // standalone data class
                 val ctor = group.first()
-                val code = KotlinEmitter.emitStandaloneFile(
-                    ctor = ctor,
-                    packageName = "${config.packageName}.$category",
-                    baseClass = config.baseClass,
+
+                // domain
+                File(domainDir, "${ctor.name.cap()}.kt").writeText(
+                    KotlinEmitter.emitStandaloneFile(
+                        ctor = ctor,
+                        packageName = domainPackage,
+                        baseClass = config.baseClass,
+                    )
                 )
-                File(dir, "${ctor.name.cap()}.kt").writeText(code)
-                standaloneCount++
+
+                // mapping
+                File(mappingDir, "${ctor.name.cap()}Mapping.kt").writeText(
+                    MappingEmitter.emitMapper(
+                        ctor = ctor,
+                        domainPackage = domainPackage,
+                        mappingPackage = mappingPackage,
+                    )
+                )
             }
             filesWritten++
         }
 
-        val categoryStats = config.outputDir
-            .listFiles { f -> f.isDirectory }
-            ?.sortedBy { it.name }
-            ?.associate { dir ->
-                dir.name to (dir.listFiles()?.size ?: 0)
-            } ?: emptyMap()
-
         println("""
- 
- tdkotlinify built successfully
- 
- output: ${config.outputDir.absolutePath}
- categories:
+tdkotlinify built successfully
+output : ${config.outputDir.absolutePath}
+domain : $domainPackage (${domainDir.listFiles()?.size ?: 0} files)
+mapping: $mappingPackage (${mappingDir.listFiles()?.size ?: 0} files)
+total  : $filesWritten types
         """.trimIndent())
-        for ((cat, count) in categoryStats) {
-            println(" %-18s %d files".format("$cat/", count))
-        }
-        println()
     }
 }
 
@@ -78,7 +86,7 @@ fun main(args: Array<String>) {
     println("""
     
  tdkotlinify
-     - op td -> kotlin converter
+     - overpowered td -> kotlin converter
      
     """.trimIndent())
 
@@ -152,19 +160,19 @@ private fun help() {
     -b, --base    <name>    base class/interface (default: TdObject)
     -h, --help              shows this screen :)
 
-  examples:
-    tdkotlinify scheme.tl ./src/generated
-    tdkotlinify scheme.tl ./out --package com.example.tdlib --base TelegramObject
+  example:
+    tdkotlinify scheme.tl ./src/generated --package eu.ellerotta.td --base TelegramObject
 
   output structure:
     output/
-    ├── chat/
-    │   ├── Chat.kt              ← standalone data class
-    │   ├── ChatType.kt          ← sealed interface with all impls nested inside
-    │   └── ChatEventAction.kt
-    ├── messages/
-    ├── updates/
-    ├── users/
-    └── ...
+    ├── domain/
+    │   ├── Chat.kt
+    │   ├── ChatType.kt
+    │   └── ...
+    └── mapping/
+        ├── ChatMapping.kt
+        ├── ChatTypeMapping.kt
+        └── ...
     """.trimIndent())
 }
+
